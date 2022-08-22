@@ -15,11 +15,13 @@ pthread_t threads[20];
 int threadErr;
 static char * s_dev;
 
+
 #define ARP 0x0806
 #define IP 0x0800
 #define TCP 6
 #define UDP 17
 #define ICMP 1
+#define IPOFFSET 14
 
 
 #pragma pack(push, 1)
@@ -274,6 +276,8 @@ int get_sender_arp_packet(char * dev,Mac target_mac, Mac sender_mac,Mac my_mac){
         fprintf(stderr, "couldn't open device %s(%s)\n", dev, errbuf);
         return 0;
     }
+
+    
     struct pcap_pkthdr* header;
     const u_char* packet;
     int res = pcap_next_ex(handle, &header, &packet);
@@ -284,29 +288,42 @@ int get_sender_arp_packet(char * dev,Mac target_mac, Mac sender_mac,Mac my_mac){
     }
     EthernetHeader* etherHeader = (EthernetHeader*)packet;
     EthHdr * ethHdr;
-    ethHdr->dmac_ = etherHeader->dstMac;
-    ethHdr->smac_ = etherHeader->srcMac;
     ethHdr->type_ = etherHeader->type;
+
 
     if (ethHdr->type() != ARP){
         pcap_close(handle);
         return 0;
     }
 
+    ethHdr->dmac_ = etherHeader->dstMac;
+    ethHdr->smac_ = etherHeader->srcMac;
+    
+    if (ethHdr->dmac() == Mac("ff:ff:ff:ff:ff:ff") && ethHdr->smac() == sender_mac){
+	std::cout << std::string(ethHdr->dmac()) << std::endl;    	
+    }
+
+
     if (ethHdr->dmac().isBroadcast() == true && ethHdr->smac() == sender_mac){
         pcap_close(handle);
         std::cout << "spoofing_broad" << std::endl;
+        std::cout << std::endl;
+	std::cout << std::endl;
         return 1;
     }
     if (ethHdr->dmac() == my_mac && ethHdr->smac() == sender_mac){
         pcap_close(handle);
         std::cout << "spoofing_unicast" << std::endl;
+        std::cout << std::endl;
+    	std::cout << std::endl;
         return 1;
     }
 
     if (ethHdr->dmac() == target_mac && ethHdr->smac() == sender_mac){
         pcap_close(handle);
         std::cout << "spoofing_unicast" << std::endl;
+        std::cout << std::endl;
+	std::cout << std::endl;
         return 1;
     }
 
@@ -431,9 +448,8 @@ void read_Ethernet_header(const u_char* packet){
 
 
 u_int8_t read_IP_header(const u_char* packet){
-    packet += 14;
+    packet += IPOFFSET;
     IpHdr* ipHdr = (IpHdr *)packet;
-    packet += 14;
 
     u_int8_t header_length = (ipHdr->version_header_length & 0x0f) * 4;
     printf("=====I P=====\n");
@@ -451,9 +467,9 @@ u_int8_t read_IP_header(const u_char* packet){
 u_int8_t read_TCP_header(const u_char* packet, u_int8_t tcp_offset){
 
     TcpHdr* tcpHdr;
-    packet += 14+tcp_offset;
+    packet += IPOFFSET+tcp_offset;
     tcpHdr = (TcpHdr*)packet;
-    u_int8_t offset = ((tcpHdr->offset_reserved & 0xf0) >> 4)*4;
+    u_int8_t offset = ((tcpHdr->offset_reserved & 0xf0) >> 4)*4;                                                                                                                                                                                                                                                                                                                                                               
     std::cout << "=====TCP=====" << std::endl;
     std::cout << "SRC PRT :" <<ntohs(tcpHdr->source_port) << std::endl;
     std::cout << "DST PRT :" << ntohs(tcpHdr->destination_port) << std::endl;
@@ -463,7 +479,7 @@ u_int8_t read_TCP_header(const u_char* packet, u_int8_t tcp_offset){
 u_int8_t read_UDP_header(const u_char* packet, u_int8_t udp_offset){
 
     UdpHdr* udpHdr;
-    packet += 14+udp_offset;
+    packet += IPOFFSET+udp_offset;
     udpHdr = (UdpHdr*)packet;
     std::cout << "=====TCP=====" << std::endl;
     std::cout << "SRC PRT :" <<ntohs(udpHdr->source_port) << std::endl;
@@ -474,18 +490,25 @@ u_int8_t read_UDP_header(const u_char* packet, u_int8_t udp_offset){
 void read_ICMP(const u_char * packet, u_int8_t icmp_offset){
 
     IcmpHdr* icmpHdr;
-    packet += 14+icmp_offset;
+    packet += IPOFFSET+icmp_offset;
     icmpHdr = (IcmpHdr*)packet;
 
     std::cout << "=====ICMP====" << std::endl;
     std::cout << "T Y P E :"<<icmpHdr->type << std::endl;
     std::cout << "MESSAGE :"<<icmpHdr->message << std::endl;
+    std::cout << std::endl;
+    std::cout << std::endl;
+    
 }
 
 u_char * sniff_packet(const u_char * packet, Mac my_mac, Mac target_mac){
 
     EthIpPacket * ethIpHeader = (EthIpPacket *)packet;
-    const u_char * new_packet;
+    
+    
+    if (ethIpHeader->eth_.type() == ARP){
+    	return NULL;
+    }
 
 
 
@@ -495,30 +518,28 @@ u_char * sniff_packet(const u_char * packet, Mac my_mac, Mac target_mac){
         u_int8_t offset = read_IP_header(packet);
         offset += read_TCP_header(packet,offset);
         read_payload(packet, offset);
-        new_packet->eth_.smac_ = my_mac;
-        new_packet->eth_.dmac_ = target_mac;
+
     }
     if(ethIpHeader->ip_.protocol == UDP ){
         UdpPacket * new_packet = (UdpPacket *)packet;
         read_Ethernet_header(packet);
         u_int8_t offset = read_IP_header(packet);
-        offset += read_TCP_header(packet,offset);
+        offset += read_UDP_header(packet,offset);
         read_payload(packet, offset);
-        new_packet->eth_.smac_ = my_mac;
-        new_packet->eth_.dmac_ = target_mac;
+
     }
     if(ethIpHeader->ip_.protocol == ICMP ){
         IcmpPacket * new_packet = (IcmpPacket *)packet;
         read_Ethernet_header(packet);
         u_int8_t offset = read_IP_header(packet);
-        offset += read_TCP_header(packet,offset);
-        read_payload(packet, offset);
+        read_ICMP(packet,offset);
 
-          new_packet->eth_.smac_ = my_mac;
-          new_packet->eth_.dmac_ = target_mac;
+         
     }
+     ethIpHeader->eth_.smac_ = my_mac;
+     ethIpHeader->eth_.dmac_ = target_mac;
 
-    return (u_char *)new_packet;
+    return (u_char *)ethIpHeader;
 
 }
 
