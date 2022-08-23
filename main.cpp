@@ -222,6 +222,7 @@ int send_request(char * dev, Mac my_mac, char * sender_ip, char * my_ip){
 Mac get_arp_packet(char * dev,Mac my_mac,char * sender_ip, char * my_ip){
     char errbuf[PCAP_ERRBUF_SIZE];
     pcap_t* handle = pcap_open_live(dev, BUFSIZ, 1, 1000, errbuf);
+
     if (handle == nullptr) {
         fprintf(stderr, "couldn't open device %s(%s)\n", dev, errbuf);
         return 0;
@@ -238,21 +239,18 @@ Mac get_arp_packet(char * dev,Mac my_mac,char * sender_ip, char * my_ip){
 
             exit(1);
         }
+ 
         int * type;
         EthernetHeader* etherHeader = (EthernetHeader*)packet;
-    	EthArpPacket * etherArpPacket;
 
-    	etherArpPacket->eth_.type_ = etherHeader->type;
- 	etherArpPacket->eth_.smac_ = etherHeader->srcMac;
- 	etherArpPacket->eth_.dmac_ = etherHeader->dstMac;
-
-    	if ( etherArpPacket->eth_.dmac() == std::string("FF:FF:FF:FF:FF:FF")){
+    	if ( Mac(etherHeader->dstMac) == std::string("FF:FF:FF:FF:FF:FF")){
 
     	    continue;
     	}
 
-    	if ((etherArpPacket->eth_.type() == ARP || etherArpPacket->eth_.dmac() == my_mac)){
-    	    return etherArpPacket->eth_.smac_;
+    	if ((ntohs(etherHeader->type) == ARP || Mac(etherHeader->dstMac) == my_mac)){
+
+    	    return Mac(etherHeader->srcMac);
     	}else{
 
     	    continue;
@@ -341,8 +339,8 @@ int get_sender_arp_packet(char * dev,Mac target_mac, Mac sender_mac,Mac my_mac){
 
 Mac get_mac_address(char * dev, Mac my_mac, char * sender_ip, char * my_ip){
     Mac sender_mac;
-
     sender_mac = get_arp_packet(dev, my_mac,sender_ip, my_ip);
+
     return sender_mac;
 }
 
@@ -711,37 +709,7 @@ void *relay_target_data(void * info){
 }
 
 
-std::vector<Info> listing_info(int argc,char * argv[],Mac my_mac,char * my_ip){
 
-    std::vector<Info> info;
-    Info mac_ip;
-    std::cout << argv[1] <<std::endl;
-    for(int i=2; i < argc; i++){
-        
-        mac_ip.sender_mac_ = get_mac_address(argv[1],my_mac,argv[i], my_ip);
-        mac_ip.sender_ip_ = argv[i];
-        ++i;
-        
-        mac_ip.target_mac_ = get_mac_address(argv[1],my_mac,argv[i], my_ip);
-
-        mac_ip.target_ip_ = argv[i];
-        mac_ip.dev_ = argv[1];
-        mac_ip.my_mac_ = my_mac;
-        mac_ip.my_ip_ = my_ip;
-        info.push_back(mac_ip);
-
-    }
-
-    std::cout << "My Mac     :" <<std::string(info[0].my_mac_) << std::endl;
-    std::cout << "Sender IP  :" <<std::string(info[0].sender_ip_) << std::endl;    
-    std::cout << "Interface  :" <<std::string(info[0].dev_) << std::endl;
-    std::cout << "Sender MAC :" <<std::string(info[0].sender_mac_) << std::endl;
-    std::cout << "Sender IP  :" <<std::string(info[0].sender_ip_) << std::endl;
-    std::cout << "Target MAC :" <<std::string(info[0].target_mac_) << std::endl;
-    std::cout << "Target IP  :" <<std::string(info[0].target_ip_) << std::endl;  
-
-    return info;
-}
 
 
 int main(int argc, char* argv[]){
@@ -756,32 +724,42 @@ int main(int argc, char* argv[]){
     std::cout << "MY I P :" << my_ip << std::endl;
     Mac my_mac = get_my_mac_address(dev);
     std::cout << "My MAC :" <<std::string(my_mac)<< std::endl;
-    std::vector<Info> info = listing_info(argc,argv,my_mac,my_ip);
+    
 
-    interruptInfo = info;
 
     int x= 0 ;
-    for(int i = 0; i <int(argc-1)/2;i++){
-        if(pthread_create(&threads[x], NULL, sender_arp_spoofing,(void*)&info[i]) !=0){
-            perror("error\n\n");
-            exit(1);
-        }
-        x++;
-        if(pthread_create(&threads[x], NULL, target_arp_spoofing,(void*)&info[i]) !=0){
-            perror("error\n\n");
-            exit(1);
-        }
-        x++;
-        if(pthread_create(&threads[x], NULL, relay_sender_data, (void*)&info[i]) !=0){
-            perror("error\n\n");
-            exit(1);
-        }
-        x++;
-        if(pthread_create(&threads[x], NULL, relay_target_data, (void*)&info[i]) !=0){
-            perror("error\n\n");
-            exit(1);
-        }
 
+    for(int i = 2; i <argc;i+=2){
+
+    	Info mac_ip;
+        mac_ip.sender_ip_ = argv[i];
+        mac_ip.sender_mac_ = get_mac_address(dev,my_mac,argv[i], my_ip);        
+        mac_ip.target_mac_ = get_mac_address(dev,my_mac,argv[i+1], my_ip);
+        mac_ip.target_ip_ = argv[i+1];
+        mac_ip.dev_ = dev;
+        mac_ip.my_mac_ = my_mac;
+        mac_ip.my_ip_ = my_ip;
+
+        if(pthread_create(&threads[x], NULL, sender_arp_spoofing,(void*)&mac_ip) !=0){
+            perror("error\n\n");
+            exit(1);
+        }
+        x++;
+        if(pthread_create(&threads[x], NULL, target_arp_spoofing,(void*)&mac_ip) !=0){
+            perror("error\n\n");
+            exit(1);
+        }
+        x++;
+        if(pthread_create(&threads[x], NULL, relay_sender_data, (void*)&mac_ip) !=0){
+            perror("error\n\n");
+            exit(1);
+        }
+        x++;
+        if(pthread_create(&threads[x], NULL, relay_target_data, (void*)&mac_ip) !=0){
+            perror("error\n\n");
+            exit(1);
+        }
+	interruptInfo.push_back(mac_ip);
         x++;
     }
 
